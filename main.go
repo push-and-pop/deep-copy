@@ -119,9 +119,9 @@ func main() {
 		log.Fatalln("no type given")
 	}
 
-	// if flag.NArg() != 1 {
-	// 	log.Fatalln("No package path given")
-	// }
+	if flag.NArg() != 1 {
+		log.Fatalln("No package path given")
+	}
 
 	sl := deepcopy.SkipLists(skipsF)
 	generator := deepcopy.NewGenerator(*pointerReceiverF, *methodF, sl, *maxDepthF)
@@ -130,8 +130,8 @@ func main() {
 	if err != nil {
 		log.Fatalln("Error initializing output file:", err)
 	}
-	err = run(generator, output, "./test.go", typesF)
-	//err = run(generator, output, flag.Args()[0], typesF)
+	//err = run(generator, output, "./test.go", typesF)
+	err = run(generator, output, flag.Args()[0], typesF)
 	if err != nil {
 		log.Fatalln("Error generating deep copy method:", err)
 	}
