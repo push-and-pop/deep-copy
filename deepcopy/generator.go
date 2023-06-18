@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -107,21 +106,29 @@ func (g Generator) generateFunc(p *packages.Package, obj object, skips skips, ge
 	var buf bytes.Buffer
 
 	var ptr string
+	var sink string
+
+	kind := obj.Obj().Name()
+	source := "pOwn"
 	if g.isPtrRecv {
 		ptr = "*"
+		fmt.Fprintf(&buf, `
+		func (pOwn %s%s) %s() %s%s {
+			p%s := new(%s)
+		`, ptr, kind, g.methodName, ptr, kind, kind, kind)
+		sink = fmt.Sprintf("p%s", kind)
+	} else {
+		fmt.Fprintf(&buf, `// %s generates a deep copy of %s%s
+		func (o %s%s) %s() %s%s {
+		       var cp %s = %s%s
+		`, g.methodName, ptr, kind, ptr, kind, g.methodName, ptr, kind, kind, ptr, source)
+		sink = "cp"
 	}
-	kind := obj.Obj().Name()
 
-	source := "o"
-	fmt.Fprintf(&buf, `// %s generates a deep copy of %s%s
-func (o %s%s) %s() %s%s {
-	var cp %s = %s%s
-`, g.methodName, ptr, kind, ptr, kind, g.methodName, ptr, kind, kind, ptr, source)
-
-	g.walkType(source, "cp", p.Name, obj, &buf, skips, generating, 0)
+	g.walkType(source, sink, p.Name, obj, &buf, skips, generating, 0)
 
 	if g.isPtrRecv {
-		buf.WriteString("return &cp\n}")
+		buf.WriteString(fmt.Sprintf("return p%s\n}", kind))
 	} else {
 		buf.WriteString("return cp\n}")
 	}
@@ -208,9 +215,9 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 		kind := g.getElemType(v.Elem(), x)
 
 		idx := "i"
-		if depth > 1 {
-			idx += strconv.Itoa(depth)
-		}
+		// if depth > 1 {
+		// 	idx += strconv.Itoa(depth)
+		// }
 
 		// sel is only used for skips
 		sel := "[i]"
@@ -224,12 +231,9 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 			skipSlice = true
 		}
 
-		fmt.Fprintf(w, `if %s != nil {
+		fmt.Fprintf(w, `
 	%s = make([]%s, len(%s))
-`, source, sink, kind, source)
-
-		fmt.Fprintf(w, `copy(%s, %s)
-`, sink, source)
+`, sink, kind, source)
 
 		var b bytes.Buffer
 
@@ -239,15 +243,18 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 		}
 
 		if b.Len() > 0 {
+			baseSel := "[" + idx + "]"
 			fmt.Fprintf(w, `    for %s := range %s {
-`, idx, source)
+									%s = %s
+`, idx, source, source+baseSel, sink+baseSel)
 
 			b.WriteTo(w)
 
 			fmt.Fprintf(w, "}\n")
+		} else {
+			fmt.Fprintf(w, `copy(%s, %s)
+			`, sink, source)
 		}
-
-		fmt.Fprintf(w, "}\n")
 	case *types.Pointer:
 		fmt.Fprintf(w, "if %s != nil {\n", source)
 
@@ -275,10 +282,10 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 
 		key, val := "k", "v"
 
-		if depth > 1 {
-			key += strconv.Itoa(depth)
-			val += strconv.Itoa(depth)
-		}
+		// if depth > 1 {
+		// 	key += strconv.Itoa(depth)
+		// 	val += strconv.Itoa(depth)
+		// }
 
 		// Sel is only used for skips
 		sel := "[k]"
@@ -292,10 +299,10 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 			skipKey, skipValue = true, true
 		}
 
-		fmt.Fprintf(w, `if %s != nil {
+		fmt.Fprintf(w, `
 	%s = make(map[%s]%s, len(%s))
 	for %s, %s := range %s {
-`, source, sink, kkind, vkind, source, key, val, source)
+`, sink, kkind, vkind, source, key, val, source)
 
 		ksink, vsink := key, val
 
@@ -315,7 +322,7 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 		b.Reset()
 
 		if !skipValue {
-			copyVSink := selToIdent(sink) + "_" + val
+			copyVSink := "p" + removePointer(vkind)
 			g.walkType(val, copyVSink, x, v.Elem(), &b, skips, generating, depth)
 
 			if b.Len() > 0 {
@@ -327,7 +334,26 @@ func (g Generator) walkType(source, sink, x string, m types.Type, w io.Writer, s
 
 		fmt.Fprintf(w, "%s[%s] = %s", sink, ksink, vsink)
 
-		fmt.Fprintf(w, "}\n}\n")
+		fmt.Fprintf(w, "}\n")
+	case *types.Array:
+		kkind := g.getElemType(v.Elem(), x)
+
+		fmt.Fprintf(w, `    %s = %s 
+			`, source, sink)
+		idx := "i"
+
+		var b bytes.Buffer
+		baseSel := "[" + idx + "]"
+		g.walkType(source+baseSel, sink+baseSel, x, v.Elem(), &b, skips, generating, depth)
+
+		if b.Len() > 0 {
+			fmt.Fprintf(w, `    for %s := range %s {
+			`, idx, source)
+			b.WriteTo(w)
+			fmt.Fprintf(w, "}\n")
+		}
+
+		fmt.Println("array:", kkind)
 	}
 }
 
@@ -467,4 +493,8 @@ func selToIdent(sel string) string {
 			return r
 		}
 	}, sel)
+}
+
+func removePointer(x string) string {
+	return strings.ReplaceAll(x, "*", "")
 }
